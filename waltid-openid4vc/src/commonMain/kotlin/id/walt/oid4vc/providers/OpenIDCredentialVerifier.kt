@@ -1,14 +1,16 @@
 package id.walt.oid4vc.providers
 
-import id.walt.oid4vc.data.ClientIdScheme
-import id.walt.oid4vc.data.ResponseMode
-import id.walt.oid4vc.data.ResponseType
+import id.walt.crypto.keys.Key
+
+import id.walt.oid4vc.data.*
 import id.walt.oid4vc.data.dif.PresentationDefinition
 import id.walt.oid4vc.interfaces.ISessionCache
 import id.walt.oid4vc.requests.AuthorizationRequest
 import id.walt.oid4vc.responses.TokenResponse
-import id.walt.oid4vc.util.randomSessionId
+import id.walt.oid4vc.util.ShortIdUtils
 import kotlinx.datetime.Clock
+import kotlinx.uuid.UUID
+import kotlinx.uuid.generateUUID
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
@@ -26,52 +28,79 @@ abstract class OpenIDCredentialVerifier(val config: CredentialVerifierConfig) :
 
     protected open fun prepareResponseOrRedirectUri(sessionID: String, responseMode: ResponseMode): String =
         when (responseMode) {
-            ResponseMode.query, ResponseMode.fragment, ResponseMode.form_post -> config.redirectUri ?: config.clientId
-            else -> config.responseUrl ?: config.clientId
+            ResponseMode.query, ResponseMode.fragment, ResponseMode.form_post -> config.redirectUri
+            else -> config.responseUrl ?: config.redirectUri
         }
 
     open fun initializeAuthorization(
         presentationDefinition: PresentationDefinition,
         responseMode: ResponseMode = ResponseMode.fragment,
+        responseType: ResponseType? = ResponseType.VpToken,
         scope: Set<String> = setOf(),
         expiresIn: Duration = 60.seconds,
         sessionId: String? = null, // A calling party may provide a unique session Id
+        ephemeralEncKey: Key? = null,
+        clientIdScheme: ClientIdScheme = config.defaultClientIdScheme,
+        openId4VPProfile: OpenId4VPProfile = OpenId4VPProfile.DEFAULT,
+        walletInitiatedAuthState: String? = null,
     ): PresentationSession {
         val session = PresentationSession(
-            id = sessionId ?: randomSessionId(),
+            id = sessionId ?: ShortIdUtils.randomSessionId(),
             authorizationRequest = null,
             expirationTimestamp = Clock.System.now().plus(expiresIn),
-            presentationDefinition = presentationDefinition
+            presentationDefinition = presentationDefinition,
+            walletInitiatedAuthState = walletInitiatedAuthState,
+            ephemeralEncKey = ephemeralEncKey,
+            openId4VPProfile = openId4VPProfile
         ).also {
             putSession(it.id, it)
         }
-        val presentationDefinitionUri = preparePresentationDefinitionUri(presentationDefinition, session.id)
+        val presentationDefinitionUri = when(openId4VPProfile) {
+            OpenId4VPProfile.ISO_18013_7_MDOC -> null
+            else -> preparePresentationDefinitionUri(presentationDefinition, session.id)
+        }
         val authReq = AuthorizationRequest(
-            responseType = ResponseType.getResponseTypeString(ResponseType.vp_token),
-            clientId = when(config.clientIdScheme) {
-                ClientIdScheme.redirect_uri -> ""
-                else -> config.clientId
+            // here add VpToken if response type is null
+            responseType = setOf(responseType!!),
+            clientId = when(openId4VPProfile) {
+                OpenId4VPProfile.DEFAULT -> config.redirectUri
+                OpenId4VPProfile.ISO_18013_7_MDOC -> config.redirectUri
+                OpenId4VPProfile.EBSIV3 -> config.redirectUri.replace("/openid4vc/verify", "")
+                else -> config.clientIdMap[clientIdScheme] ?: config.defaultClientId
             },
             responseMode = responseMode,
-            redirectUri = when (responseMode) {
-                ResponseMode.query, ResponseMode.fragment, ResponseMode.form_post -> prepareResponseOrRedirectUri(
-                    session.id,
-                    responseMode
-                )
-                else -> null
+            redirectUri = when(openId4VPProfile) {
+                OpenId4VPProfile.EBSIV3 -> prepareResponseOrRedirectUri(session.id, responseMode)
+                else -> when (responseMode) {
+                    ResponseMode.query, ResponseMode.fragment, ResponseMode.form_post -> prepareResponseOrRedirectUri(
+                        session.id,
+                        responseMode
+                    )
+                    else -> null
+                }
             },
-            responseUri = when (responseMode) {
-                ResponseMode.direct_post -> prepareResponseOrRedirectUri(session.id, responseMode)
-                else -> null
+            responseUri = when(openId4VPProfile) {
+                OpenId4VPProfile.EBSIV3 -> null
+                else -> when (responseMode) {
+                    ResponseMode.direct_post, ResponseMode.direct_post_jwt -> prepareResponseOrRedirectUri(session.id, responseMode)
+                    else -> null
+                }
             },
             presentationDefinitionUri = presentationDefinitionUri,
-            presentationDefinition = when (presentationDefinitionUri) {
-                null -> presentationDefinition
-                else -> null
+            presentationDefinition =  when(openId4VPProfile) {
+                OpenId4VPProfile.EBSIV3 -> presentationDefinition // some wallets support presentation_definition only, even ebsiconformancetest wallet
+                else -> when (presentationDefinitionUri) {
+                    null -> presentationDefinition
+                    else -> null
+                }
             },
-            scope = scope,
+            scope =  when(openId4VPProfile) {
+                OpenId4VPProfile.EBSIV3 -> setOf("openid")
+                else -> scope
+            },
             state = session.id,
-            clientIdScheme = config.clientIdScheme
+            clientIdScheme = clientIdScheme,
+            nonce = UUID.generateUUID().toString()
         )
         return session.copy(authorizationRequest = authReq).also {
             putSession(session.id, it)

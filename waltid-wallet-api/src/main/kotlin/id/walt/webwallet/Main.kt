@@ -1,5 +1,6 @@
 package id.walt.webwallet
 
+import id.walt.crypto.keys.oci.WaltCryptoOci
 import id.walt.did.helpers.WaltidServices
 import id.walt.webwallet.config.ConfigManager
 import id.walt.webwallet.config.WebConfig
@@ -30,17 +31,28 @@ suspend fun main(args: Array<String>) {
 
     webWalletSetup()
     WaltidServices.minimalInit()
+    WaltCryptoOci.init()
 
     Db.start()
 
     val webConfig = ConfigManager.getConfig<WebConfig>()
-    log.info { "Starting web server (binding to ${webConfig.webHost}, listening on port ${webConfig.webPort})..." }
+    log.info { "Starting web server (binding to ${webConfig.webHost}, listening on port ${webConfig.webPort}) ..." }
+    // According class io.ktor.server.engine.ApplicationEngine the Ktor config will be determined by the number of available processors
+    log.debug { "Available Processors: ${Runtime.getRuntime().availableProcessors()}" }
+
 
     embeddedServer(
         CIO,
         port = webConfig.webPort,
         host = webConfig.webHost,
-        module = Application::webWalletModule
+        module = Application::webWalletModule,
+        configure = {
+//            connectionGroupSize = 10
+//            workerGroupSize = 5
+//            callGroupSize = 5
+            shutdownGracePeriod = 2000
+            shutdownTimeout = 3000
+        }
     ).start(wait = true)
 }
 
@@ -68,11 +80,11 @@ fun Application.webWalletModule(withPlugins: Boolean = true) {
     health()
 
     auth()
+    accounts()
     push()
     notifications()
 
     // Wallet routes
-    accounts()
     keys()
     dids()
     credentials()

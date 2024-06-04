@@ -3,13 +3,16 @@ package id.walt.oid4vc.data.dif
 import id.walt.oid4vc.data.JsonDataObject
 import id.walt.oid4vc.data.JsonDataObjectFactory
 import id.walt.oid4vc.data.JsonDataObjectSerializer
+import id.walt.oid4vc.util.ShortIdUtils
+import id.walt.oid4vc.data.OpenId4VPProfile
+import kotlinx.serialization.EncodeDefault
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.*
 
 @Serializable
 data class PresentationDefinition(
-    val id: String = "1",
+    @EncodeDefault val id: String = ShortIdUtils.randomSessionId(),
     @SerialName("input_descriptors") @Serializable(InputDescriptorListSerializer::class) val inputDescriptors: List<InputDescriptor>,
     val name: String? = null,
     val purpose: String? = null,
@@ -37,23 +40,63 @@ data class PresentationDefinition(
         override fun fromJSON(jsonObject: JsonObject) =
             Json.decodeFromJsonElement(PresentationDefinitionSerializer, jsonObject)
 
-        fun primitiveGenerationFromVcTypes(types: List<String>): PresentationDefinition {
+        fun primitiveGenerationFromVcTypes(types: List<String>, openId4VPProfile: OpenId4VPProfile): PresentationDefinition {
             return PresentationDefinition(inputDescriptors = types.map { type ->
-                InputDescriptor(
-                    id = type,
-                    format = mapOf(VCFormat.jwt_vc_json to VCFormatDefinition(alg = setOf("EdDSA"))),
-                    constraints = InputDescriptorConstraints(
-                        listOf(
-                            InputDescriptorField(
-                                path = listOf("$.type"), filter = JsonObject(
-                                    mapOf(
-                                        "type" to JsonPrimitive("string"), "pattern" to JsonPrimitive(type)
+                when(openId4VPProfile) {
+                    OpenId4VPProfile.ISO_18013_7_MDOC -> InputDescriptor(
+                            id = type,
+                            format = mapOf(VCFormat.mso_mdoc to VCFormatDefinition(setOf("EdDSA", "ES256"))),
+                            constraints = InputDescriptorConstraints(
+                                limitDisclosure = DisclosureLimitation.required,
+                                fields = listOf(
+                                    InputDescriptorField(
+                                        path = listOf("$['org.iso.18013.5.1']['family_name']"),
+                                        intentToRetain = false
+                                    ),
+                                    InputDescriptorField(
+                                        path = listOf("$['org.iso.18013.5.1']['given_name']"),
+                                        intentToRetain = false
+                                    ),
+                                    InputDescriptorField(
+                                        path = listOf("$['org.iso.18013.5.1']['birth_date']"),
+                                        intentToRetain = false
                                     )
                                 )
                             )
                         )
-                    )
-                )
+                    OpenId4VPProfile.DEFAULT ->
+                        InputDescriptor(
+                            id = type,
+                            format = mapOf(VCFormat.jwt_vc_json to VCFormatDefinition(alg = setOf("EdDSA"))),
+                            constraints = InputDescriptorConstraints(
+                                listOf(
+                                    InputDescriptorField(
+                                        path = listOf("$.type"), filter = JsonObject(
+                                            mapOf(
+                                                "type" to JsonPrimitive("string"), "pattern" to JsonPrimitive(type)
+                                            )
+                                        )
+                                    )
+                                )
+                            )
+                        )
+                    OpenId4VPProfile.EBSIV3 ->
+                        InputDescriptor(
+                            id = type,
+                            format = mapOf(VCFormat.jwt_vc to VCFormatDefinition(alg = setOf("ES256"))),
+                            constraints = InputDescriptorConstraints(
+                                listOf(
+                                    InputDescriptorField(
+                                        path = listOf("$.type"), filter = JsonObject(
+                                            mapOf(
+                                                "type" to JsonPrimitive("array"), "pattern" to JsonPrimitive(type)
+                                            )
+                                        )
+                                    ),
+                                )
+                            )
+                        )
+                }
             })
         }
 
